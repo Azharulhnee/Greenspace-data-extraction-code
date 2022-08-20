@@ -1,0 +1,246 @@
+//weather stations of berlin 
+//////////////////////////////////
+var weatherStBL0=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ -0.125848 , 51.522287])
+var weatherStBX2=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ 0.158914494 , 51.49061021])
+var weatherStCD1=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ -0.175284 , 51.544219])
+var weatherStGR4=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ 0.070766 , 51.45258])
+var weatherStHR1=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ -0.298775 , 51.617327])
+var weatherStMY1=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ -0.15459 , 51.52254])
+var weatherStRI1=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ -0.237335 , 51.480189])
+var weatherStIS2=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([  -0.116146000000 , 51.555378])
+var weatherStTK1=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ 0.255133 , 51.478697])
+var weatherStZV1=  /* color: #312ad6 */ /* shown true */ ee.Geometry.Point([ 0.201437 , 51.289391])
+
+
+
+var bufBL0=weatherStBL0.buffer({"distance":1000})
+var bufBX2=weatherStBX2.buffer({"distance":1000})
+var bufCD1=weatherStCD1.buffer({"distance":1000})
+var bufGR4=weatherStGR4.buffer({"distance":1000})
+var bufHR1=weatherStHR1.buffer({"distance":1000})
+var bufMY1=weatherStMY1.buffer({"distance":1000})
+var bufRI1=weatherStRI1.buffer({"distance":1000})
+var bufIS2=weatherStIS2.buffer({"distance":1000})
+var bufTK1=weatherStTK1.buffer({"distance":1000})
+var bufZV1=weatherStZV1.buffer({"distance":1000})
+
+
+var weatherStation = ee.FeatureCollection([
+  
+  ee.Feature(bufBL0,{name:"weather Station bufBL0 "}),
+
+  ee.Feature(bufBX2,{name:"weather Station bufBX2"}),
+
+  ee.Feature(bufCD1,{name:"weather Station bufCD1"}),
+
+  ee.Feature(bufGR4,{name:"weather Station bufGR4"}),
+
+  ee.Feature(bufHR1,{name:"weather Station bufHR1"}),
+  
+  ee.Feature(bufMY1,{name:"weather Station bufMY1"}),
+  
+  ee.Feature(bufRI1,{name:"weather Station bufRI1"}),
+  
+  ee.Feature(bufIS2,{name:"weather Station bufIS2"}),
+  
+  ee.Feature(bufTK1,{name:"weather Station bufTK1"}),
+  
+  ee.Feature(bufZV1,{name:"weather Station bufZV1"}),
+  ])
+
+/////////////////////////////////////
+
+Map.addLayer(weatherStation,
+             {'color': 'blue'},
+             '1 km buffer around weather station');
+             
+
+//Setting center of Study area 
+Map.setCenter(0.158914494,  51.49061021, 11)
+//showing shape file of melbourne
+Map.addLayer(weatherStation)
+// Load the Landsat 8 scaled radiance image collection.
+var landsatCollection = ee.ImageCollection('LANDSAT/LT05/C01/T1')
+    .filterDate('2000-03-01', '2000-08-31');
+    
+    
+// Make a cloud-free composite.
+var composite = ee.Algorithms.Landsat.simpleComposite({
+  collection: landsatCollection,
+  asFloat: true
+});
+
+// Visualize the Composite
+Map.addLayer(composite.clip(weatherStation), {bands: ['B3', 'B2', 'B1']
+,min: 0.04154248535633087, max: 0.15978215634822845, gamma: 2}, 'L8 rgb Image', false);
+
+// Merge points together
+var mergedFeature = greenspace.merge(builtin).merge(water).merge(fellowland);
+print(mergedFeature, 'all features are merged into one');
+
+
+// Training points export as csv file
+
+/*Export.table.toDrive({
+  collection: ee.FeatureCollection(mergedFeature),
+  description: 'FeatureClasses',
+  fileFormat: 'CSV'
+});*/
+
+
+// Select the bands for training
+var bands = ['B1','B2', 'B3', 'B4', 'B5', 'B6', 'B7'];
+
+// Sample the input imagery to get a FeatureCollection of training data.
+var training = composite.select(bands).sampleRegions({
+  collection: mergedFeature,
+  properties: ['landcover'],
+  scale: 30
+});
+
+// Make a Random Forest classifier and train it.
+var classifier = ee.Classifier.smileRandomForest(10).train({
+  features: training,
+  classProperty: 'landcover',
+  inputProperties: bands
+});
+
+
+// Classify the input imagery.
+var classified = composite.select(bands).classify(classifier);
+
+// Define a palette for the Land Use classification.
+var palette = [
+  'green',
+  'red', 
+  'blue', 
+  'yellow'
+
+];
+
+// Display the classification result and the input image.
+// Map.centerObject(roi);
+Map.addLayer(classified.clip(weatherStation), {min: 0, max: 3, palette: palette}, 'Land Use Classification');
+//export to drive
+Export.image.toDrive({
+  image: classified,
+  description: "classified_image",
+  scale: 30,
+  region:classified.clip(weatherStation),
+  
+})
+
+//area calculation for each class 
+
+var clipCity = classified.clip(weatherStation);
+
+
+var calculateClassArea = function(feature) {
+    var areas = ee.Image.pixelArea().addBands(clipCity).reduceRegion({
+      reducer: ee.Reducer.sum().group({
+      groupField: 1,
+      groupName: 'landcover',
+    }),
+    geometry: feature.geometry(),
+    scale: 30,
+    maxPixels: 1e10
+    })
+    var classAreas = ee.List(areas.get('groups'))
+    var classAreaLists = classAreas.map(function(item) {
+      var areaDict = ee.Dictionary(item)
+      var classNumber = ee.Number(areaDict.get('landcover')).format()
+      var area = ee.Number(areaDict.get('sum')).divide(1e4)
+      return ee.List([classNumber, area])
+    })
+    var result = ee.Dictionary(classAreaLists.flatten())
+
+    var city = feature.get('name')
+    return ee.Feature(feature.geometry(), result.set('Weather Station ID', city))
+}
+
+var cityAreas = weatherStation.map(calculateClassArea);
+print(cityAreas, "London city")
+
+
+var classes = ee.List.sequence(0,5)
+
+var outputFields = ee.List(['Weather Station ID']).cat(classes).getInfo()
+
+// Export the results as a CSV file
+print(outputFields)
+Export.table.toDrive({
+    collection: cityAreas,
+    description: 'class_area_by_weather_Station_winterL5_2000_summer',
+    folder: 'London_city_LULC',
+    fileNamePrefix: 'class_area_by_weather_Station_winterL5_2000_summer',
+    fileFormat: 'CSV',
+    selectors: outputFields
+    });
+    
+    
+  // set position of panel
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px'
+  }
+});
+ 
+// Create legend title
+var legendTitle = ui.Label({
+  value: 'classified Image ',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '18px',
+    margin: '0 0 4px 0',
+    padding: '0'
+    }
+});
+ 
+// Add the title to the panel
+legend.add(legendTitle);
+ 
+// Creates and styles 1 row of the legend.
+var makeRow = function(color, name) {
+ 
+      // Create the label that is actually the colored box.
+      var colorBox = ui.Label({
+        style: {
+          backgroundColor: color,
+          // Use padding to give the box height and width.
+          padding: '8px',
+          margin: '0 0 4px 0'
+        }
+      });
+ 
+      // Create the label filled with the description text.
+      var description = ui.Label({
+        value: name,
+        style: {margin: '0 0 4px 6px'}
+      });
+ 
+      // return the panel
+      return ui.Panel({
+        widgets: [colorBox, description],
+        layout: ui.Panel.Layout.Flow('horizontal')
+      });
+};
+ 
+//  Palette with the colors
+var palette =[
+  '#06d608',
+  '#ff3905', 
+  '#0843d8', 
+  '#ffcfc2'];
+ 
+// name of the legend
+var names = ['Greenspace','builtin','water','Fellowland' ];
+ 
+// Add color and and names
+for (var i = 0; i < 4; i++) {
+  legend.add(makeRow(palette[i], names[i]));
+  }  
+ 
+// add legend to map (alternatively you can also print the legend to the console)
+Map.add(legend);
+
